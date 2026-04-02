@@ -3,7 +3,7 @@ import { buildSnapshotInputSchema } from "../contracts/toolSchemas.js";
 import { AppError } from "../lib/errors.js";
 import {
   makeRequestId,
-  requireOAuthSession,
+  requireOAuthSessionWithLinkedAccount,
   requirePublicToken,
   resolveOptionalAuthSession,
   toolErrorResult,
@@ -33,19 +33,20 @@ export function registerBuildTimelineSnapshotTool(server: any, ctx: ToolContext)
         const input = buildSnapshotInputSchema.parse(rawInput);
 
         if (input.mode === "home_timeline") {
-          const session = await requireOAuthSession(ctx, requiredSessionId(input.oauth_session_id), [
+          const session = await requireOAuthSessionWithLinkedAccount(ctx, requiredSessionId(input.oauth_session_id), [
             "tweet.read",
-            "users.read",
-            "offline.access"
+            "users.read"
           ]);
           const homeParams: {
             auth: { mode: "oauth2"; accessToken: string };
+            userId: string;
             maxResults: number;
             paginationToken?: string;
             excludeReplies: boolean;
             excludeRetweets: boolean;
           } = {
             auth: { mode: "oauth2", accessToken: session.accessToken },
+            userId: session.linkedAccount.id as string,
             maxResults: input.max_results,
             excludeReplies: input.exclude_replies,
             excludeRetweets: input.exclude_retweets
@@ -53,12 +54,12 @@ export function registerBuildTimelineSnapshotTool(server: any, ctx: ToolContext)
           if (input.pagination_token) {
             homeParams.paginationToken = input.pagination_token;
           }
-          const response = await ctx.xClient.getHomeTimeline(homeParams);
+          const response = await ctx.xClient.getHomeTimelineByUserId(homeParams);
 
           return {
             content: [{ type: "text" as const, text: "Built normalized home timeline snapshot." }],
             structuredContent: normalizeTimelineBundle({
-              endpoint: "/users/me/timelines/reverse_chronological",
+              endpoint: `/users/${session.linkedAccount.id}/timelines/reverse_chronological`,
               authMode: "oauth2",
               query: null,
               cursor: input.pagination_token ?? null,
@@ -81,7 +82,7 @@ export function registerBuildTimelineSnapshotTool(server: any, ctx: ToolContext)
           if (!input.query) {
             throw new AppError("VALIDATION_ERROR", "query is required when mode=search_recent_posts.", 400, false);
           }
-          const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id);
+          const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id, ["tweet.read"]);
           const authMode = oauthSession ? "oauth2" : "noauth";
           const token = oauthSession?.accessToken ?? requirePublicToken(ctx.env);
           const searchParams: {
@@ -127,7 +128,7 @@ export function registerBuildTimelineSnapshotTool(server: any, ctx: ToolContext)
           if (!input.user_id) {
             throw new AppError("VALIDATION_ERROR", "user_id is required when mode=user_timeline.", 400, false);
           }
-          const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id);
+          const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id, ["tweet.read"]);
           const authMode = oauthSession ? "oauth2" : "noauth";
           const token = oauthSession?.accessToken ?? requirePublicToken(ctx.env);
           const timelineParams: {
@@ -175,7 +176,7 @@ export function registerBuildTimelineSnapshotTool(server: any, ctx: ToolContext)
           throw new AppError("VALIDATION_ERROR", "post_ids is required when mode=post_batch.", 400, false);
         }
 
-        const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id);
+        const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id, ["tweet.read"]);
         const authMode = oauthSession ? "oauth2" : "noauth";
         const token = oauthSession?.accessToken ?? requirePublicToken(ctx.env);
         const response = await ctx.xClient.getPostBatch(input.post_ids, { mode: authMode, accessToken: token });
@@ -200,7 +201,7 @@ export function registerBuildTimelineSnapshotTool(server: any, ctx: ToolContext)
         };
       } catch (error) {
         ctx.logger.error({ requestId, tool: "x.build_timeline_snapshot", error }, "Tool failed");
-        return toolErrorResult(requestId, error);
+        return toolErrorResult(ctx, requestId, error);
       }
     }
   );

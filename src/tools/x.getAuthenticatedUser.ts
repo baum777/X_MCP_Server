@@ -20,7 +20,7 @@ export function registerGetAuthenticatedUserTool(server: any, ctx: ToolContext) 
       const requestId = makeRequestId();
       try {
         const input = oauthSessionInputSchema.parse(rawInput);
-        const session = await requireOAuthSession(ctx, input.oauth_session_id, ["tweet.read", "users.read", "offline.access"]);
+        const session = await requireOAuthSession(ctx, input.oauth_session_id, ["users.read"]);
 
         const response = await ctx.xClient.getAuthenticatedUser({
           mode: "oauth2",
@@ -37,12 +37,7 @@ export function registerGetAuthenticatedUserTool(server: any, ctx: ToolContext) 
         });
 
         if (normalized.users[0]) {
-          ctx.tokenStore.createOrUpdateSession({
-            sessionId: session.sessionId,
-            accessToken: session.accessToken,
-            refreshToken: session.refreshToken,
-            scope: session.scope,
-            expiresAtUnix: session.expiresAtUnix,
+          await ctx.tokenStore.updateSession(session.sessionId, {
             linkedAccount: {
               id: normalized.users[0].id,
               username: normalized.users[0].username
@@ -56,7 +51,7 @@ export function registerGetAuthenticatedUserTool(server: any, ctx: ToolContext) 
         };
       } catch (error) {
         ctx.logger.error({ requestId, tool: "x.get_authenticated_user", error }, "Tool failed");
-        return toolErrorResult(requestId, error);
+        return toolErrorResult(ctx, requestId, error);
       }
     }
   );

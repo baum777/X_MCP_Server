@@ -23,7 +23,7 @@ export function registerGetUserTimelineTool(server: any, ctx: ToolContext) {
       const requestId = makeRequestId();
       try {
         const input = getUserTimelineInputSchema.parse(rawInput);
-        const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id);
+        const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id, ["tweet.read"]);
         const authMode = oauthSession ? "oauth2" : "noauth";
         const token = oauthSession?.accessToken ?? requirePublicToken(ctx.env);
 
@@ -70,7 +70,7 @@ export function registerGetUserTimelineTool(server: any, ctx: ToolContext) {
         };
       } catch (error) {
         ctx.logger.error({ requestId, tool: "x.get_user_timeline", error }, "Tool failed");
-        return toolErrorResult(requestId, error);
+        return toolErrorResult(ctx, requestId, error);
       }
     }
   );

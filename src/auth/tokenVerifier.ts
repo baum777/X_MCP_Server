@@ -17,9 +17,7 @@ export class OAuthTokenVerifier {
   async verify(session: TokenSession, options: VerifyOptions): Promise<void> {
     const now = Math.floor(Date.now() / 1000);
     if (session.expiresAtUnix !== null && session.expiresAtUnix <= now) {
-      throw new AppError("AUTH_TOKEN_INVALID", "OAuth access token has expired.", 401, false, {
-        session_id: session.sessionId
-      });
+      throw new AppError("AUTH_TOKEN_INVALID", "OAuth access token has expired.", 401, false);
     }
 
     await this.verifyTokenClaims(session.accessToken);
@@ -27,19 +25,24 @@ export class OAuthTokenVerifier {
   }
 
   private async verifyTokenClaims(accessToken: string): Promise<void> {
+    if (this.env.xTokenVerificationMode === "dev_skip_verify") {
+      return;
+    }
+
+    if (this.env.xTokenVerificationMode === "opaque_trust_session") {
+      return;
+    }
+
     const isJwt = accessToken.split(".").length === 3;
 
     if (!isJwt) {
-      if (this.env.allowOpaqueXAccessToken) {
-        return;
-      }
       throw new AppError(
         "AUTH_TOKEN_UNVERIFIABLE",
-        "Access token is opaque and cannot be issuer/audience verified in fail-closed mode.",
+        "Access token is opaque and cannot be issuer/audience verified in strict_jwt mode.",
         401,
         false,
         {
-          hint: "Set ALLOW_OPAQUE_X_ACCESS_TOKEN=true only if your trust boundary accepts opaque-token verification limits."
+          hint: "Set X_TOKEN_VERIFICATION_MODE=opaque_trust_session only if your trust boundary accepts session-bound opaque-token verification."
         }
       );
     }

@@ -1,4 +1,7 @@
 export type ErrorCode =
+  | "CONFIG_ERROR"
+  | "STORAGE_ERROR"
+  | "CRYPTO_ERROR"
   | "VALIDATION_ERROR"
   | "AUTH_REQUIRED"
   | "AUTH_SCOPE_MISSING"

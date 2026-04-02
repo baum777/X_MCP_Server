@@ -29,7 +29,7 @@ export function registerLookupUsersTool(server: any, ctx: ToolContext) {
           throw new AppError("VALIDATION_ERROR", "Provide at least one username or one ID.", 400, false);
         }
 
-        const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id);
+        const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id, ["users.read"]);
         const authMode = oauthSession ? "oauth2" : "noauth";
         const token = oauthSession?.accessToken ?? requirePublicToken(ctx.env);
 
@@ -63,7 +63,7 @@ export function registerLookupUsersTool(server: any, ctx: ToolContext) {
         };
       } catch (error) {
         ctx.logger.error({ requestId, tool: "x.lookup_users", error }, "Tool failed");
-        return toolErrorResult(requestId, error);
+        return toolErrorResult(ctx, requestId, error);
       }
     }
   );

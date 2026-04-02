@@ -118,8 +118,9 @@ export class XApiClient {
     });
   }
 
-  async getHomeTimeline(params: {
+  async getHomeTimelineByUserId(params: {
     auth: Auth;
+    userId: string;
     maxResults: number;
     paginationToken?: string;
     excludeReplies: boolean;
@@ -130,7 +131,7 @@ export class XApiClient {
       params.excludeRetweets ? "retweets" : null
     ].filter((value): value is string => Boolean(value));
 
-    return this.requestJson("/users/me/timelines/reverse_chronological", {
+    return this.requestJson(`/users/${encodeURIComponent(params.userId)}/timelines/reverse_chronological`, {
       auth: params.auth,
       searchParams: {
         max_results: String(params.maxResults),

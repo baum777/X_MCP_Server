@@ -1,6 +1,11 @@
 import { normalizeTimelineBundle } from "../contracts/normalize.js";
 import { getHomeTimelineInputSchema } from "../contracts/toolSchemas.js";
-import { requireOAuthSession, makeRequestId, toolErrorResult, type ToolContext } from "./shared.js";
+import {
+  makeRequestId,
+  requireOAuthSessionWithLinkedAccount,
+  toolErrorResult,
+  type ToolContext
+} from "./shared.js";
 
 export function registerGetHomeTimelineTool(server: any, ctx: ToolContext) {
   server.registerTool(
@@ -20,15 +25,20 @@ export function registerGetHomeTimelineTool(server: any, ctx: ToolContext) {
       const requestId = makeRequestId();
       try {
         const input = getHomeTimelineInputSchema.parse(rawInput);
-        const session = await requireOAuthSession(ctx, input.oauth_session_id, ["tweet.read", "users.read", "offline.access"]);
+        const session = await requireOAuthSessionWithLinkedAccount(ctx, input.oauth_session_id, [
+          "tweet.read",
+          "users.read"
+        ]);
         const homeParams: {
           auth: { mode: "oauth2"; accessToken: string };
+          userId: string;
           maxResults: number;
           paginationToken?: string;
           excludeReplies: boolean;
           excludeRetweets: boolean;
         } = {
           auth: { mode: "oauth2", accessToken: session.accessToken },
+          userId: session.linkedAccount.id as string,
           maxResults: input.max_results,
           excludeReplies: input.exclude_replies,
           excludeRetweets: input.exclude_retweets
@@ -36,10 +46,10 @@ export function registerGetHomeTimelineTool(server: any, ctx: ToolContext) {
         if (input.pagination_token) {
           homeParams.paginationToken = input.pagination_token;
         }
-        const response = await ctx.xClient.getHomeTimeline(homeParams);
+        const response = await ctx.xClient.getHomeTimelineByUserId(homeParams);
 
         const normalized = normalizeTimelineBundle({
-          endpoint: "/users/me/timelines/reverse_chronological",
+          endpoint: `/users/${session.linkedAccount.id}/timelines/reverse_chronological`,
           authMode: "oauth2",
           query: null,
           cursor: input.pagination_token ?? null,
@@ -61,7 +71,7 @@ export function registerGetHomeTimelineTool(server: any, ctx: ToolContext) {
         };
       } catch (error) {
         ctx.logger.error({ requestId, tool: "x.get_home_timeline", error }, "Tool failed");
-        return toolErrorResult(requestId, error);
+        return toolErrorResult(ctx, requestId, error);
       }
     }
   );

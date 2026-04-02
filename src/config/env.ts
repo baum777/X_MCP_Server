@@ -1,5 +1,6 @@
 import { config as loadDotEnv } from "dotenv";
 import { z } from "zod";
+import { AppError } from "../lib/errors.js";
 
 loadDotEnv();
 
@@ -20,11 +21,11 @@ const envSchema = z.object({
   X_JWKS_URL: z.string().url().optional(),
   X_APP_BEARER_TOKEN: z.string().min(1).optional(),
 
-  SESSION_SECRET: z.string().min(16),
-  ALLOW_OPAQUE_X_ACCESS_TOKEN: z
-    .string()
-    .optional()
-    .transform((v) => v === "true"),
+  SESSION_STORE_MODE: z.enum(["in_memory", "postgres"]).default("postgres"),
+  SESSION_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/),
+  DATABASE_URL: z.string().min(1).optional(),
+  OAUTH_PENDING_AUTH_TTL_SECONDS: z.coerce.number().int().positive().default(600),
+  X_TOKEN_VERIFICATION_MODE: z.enum(["strict_jwt", "opaque_trust_session", "dev_skip_verify"]).default("strict_jwt"),
   TOKEN_SESSION_TTL_SECONDS: z.coerce.number().int().positive().default(86400)
 });
 
@@ -43,13 +44,24 @@ export type Env = {
   xAudience: string;
   xJwksUrl: string | null;
   xAppBearerToken: string | null;
-  sessionSecret: string;
-  allowOpaqueXAccessToken: boolean;
+  sessionStoreMode: "in_memory" | "postgres";
+  sessionEncryptionKey: string;
+  databaseUrl: string | null;
+  oauthPendingAuthTtlSeconds: number;
+  xTokenVerificationMode: "strict_jwt" | "opaque_trust_session" | "dev_skip_verify";
   tokenSessionTtlSeconds: number;
 };
 
 export function loadEnv(): Env {
   const raw = envSchema.parse(process.env);
+  if (raw.SESSION_STORE_MODE === "postgres" && !raw.DATABASE_URL) {
+    throw new AppError(
+      "CONFIG_ERROR",
+      "DATABASE_URL is required when SESSION_STORE_MODE=postgres.",
+      500,
+      false
+    );
+  }
   return {
     port: raw.PORT,
     publicBaseUrl: raw.PUBLIC_BASE_URL,
@@ -65,8 +77,11 @@ export function loadEnv(): Env {
     xAudience: raw.X_AUDIENCE,
     xJwksUrl: raw.X_JWKS_URL ?? null,
     xAppBearerToken: raw.X_APP_BEARER_TOKEN ?? null,
-    sessionSecret: raw.SESSION_SECRET,
-    allowOpaqueXAccessToken: raw.ALLOW_OPAQUE_X_ACCESS_TOKEN ?? false,
+    sessionStoreMode: raw.SESSION_STORE_MODE,
+    sessionEncryptionKey: raw.SESSION_ENCRYPTION_KEY,
+    databaseUrl: raw.DATABASE_URL ?? null,
+    oauthPendingAuthTtlSeconds: raw.OAUTH_PENDING_AUTH_TTL_SECONDS,
+    xTokenVerificationMode: raw.X_TOKEN_VERIFICATION_MODE,
     tokenSessionTtlSeconds: raw.TOKEN_SESSION_TTL_SECONDS
   };
 }

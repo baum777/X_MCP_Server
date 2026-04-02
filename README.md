@@ -18,13 +18,21 @@ Implemented:
 - OAuth Authorization Code + PKCE start/callback
 - Fail-closed OAuth token verification path
 - Rate-limit header capture and normalized mapping
-- Basic tests (normalization, rate-limit parser, tool-surface sanity)
+- Durable session store abstraction with encrypted token persistence
+- Postgres-backed session store as the default runtime mode
+- In-memory session store for local/dev only
+- Pending OAuth state persistence
+- Session lifecycle states: `active`, `expired`, `revoked`, `invalid`
+- Session cleanup on startup and a periodic cleanup loop
+- Basic tests covering normalization, auth challenge behavior, token verification, and session lifecycle semantics
 
 Not fully production-complete yet:
-- Token persistence is in-memory only (no durable encrypted store)
+- No HA/distributed session orchestration
+- No production audit sink or observability pipeline
 - OAuth end-to-end integration tests against live X are not included
-- Opaque access-token verification is limited by token format/JWKS availability
-- No distributed session store, no HA orchestration, no audit sink
+- Opaque access-token handling is mode-based and still depends on the chosen trust boundary
+- `in_memory` mode is not durable and should be treated as dev-only
+- The OAuth bridge pattern still uses `oauth_session_id` as a caller-supplied session handle; this is not a full native OAuth UX integration
 
 ## Tool Surface (V1)
 
@@ -90,7 +98,7 @@ Use this when you need one normalized analysis bundle generated from a search, t
 - Recent search: `/2/tweets/search/recent`
 - User tweets timeline: `/2/users/:id/tweets`
 - Authenticated user: `/2/users/me`
-- Home timeline: `/2/users/me/timelines/reverse_chronological`
+- Home timeline: `/2/users/me` then `/2/users/:id/timelines/reverse_chronological`
 
 ## Explicitly Unsupported in V1
 
@@ -118,14 +126,18 @@ These can run without linked-user OAuth if `X_APP_BEARER_TOKEN` is configured.
 OAuth flow:
 1. Start at `GET /oauth/x/start` (redirects to X authorize URL with PKCE).
 2. X redirects to `X_REDIRECT_URI` (default `GET /oauth/x/callback`).
-3. Callback exchanges code for token, stores session, and returns `oauth_session_id`.
+3. Callback exchanges code for token, stores an encrypted session durably when the store is configured for Postgres, and returns `oauth_session_id`.
 4. MCP callers provide `oauth_session_id` on OAuth-required tools.
+5. In this V1 scaffold, `oauth_session_id` is still a bridge between the OAuth callback and MCP tool calls, not a full native OAuth identity layer.
+6. If a tool finds a missing or expired OAuth session, it returns an auth-challenge-ready error with top-level `mcp/www_authenticate` metadata and an `oauth_start_url` hint.
+7. Session records are persisted with explicit lifecycle state and are cleaned up explicitly when expired or revoked.
 
 Per OAuth tool call, the server verifies:
 - Token expiration
 - Required scopes
-- Issuer/audience/signature when token is JWT and JWKS is configured
-- Fail-closed behavior for opaque tokens unless explicitly overridden
+- Issuer/audience/signature in `strict_jwt` mode when JWKS is configured
+- Session-bound opaque-token trust in `opaque_trust_session` mode
+- Verification skip in `dev_skip_verify` mode for local-only testing
 
 ## Environment Variables
 
@@ -138,13 +150,17 @@ Required in practice:
 - `X_CLIENT_ID`
 - `X_REDIRECT_URI`
 - `X_SCOPES`
-- `SESSION_SECRET`
+- `SESSION_STORE_MODE`
+- `SESSION_ENCRYPTION_KEY`
 - `LOG_LEVEL`
 
 Conditionally required:
 - `X_CLIENT_SECRET` (if confidential-client exchange is required)
 - `X_APP_BEARER_TOKEN` (for noauth public-tool execution)
 - `X_JWKS_URL` (for JWT signature verification)
+- `X_TOKEN_VERIFICATION_MODE` (`strict_jwt`, `opaque_trust_session`, or `dev_skip_verify`)
+- `DATABASE_URL` when `SESSION_STORE_MODE=postgres`
+- `OAUTH_PENDING_AUTH_TTL_SECONDS`
 
 ## Local Setup
 
@@ -159,16 +175,57 @@ cp .env.example .env
 ```
 Then fill required values.
 
-3. Run dev server:
+3. Apply the session schema when using Postgres:
+```bash
+psql "$DATABASE_URL" -f sql/migrations/001_oauth_sessions.sql
+```
+
+4. Run dev server:
 ```bash
 npm run dev
 ```
 
-4. MCP endpoint:
+5. MCP endpoint:
 - `POST {PUBLIC_BASE_URL}{MCP_BASE_PATH}` (default `POST http://localhost:3000/mcp`)
 
-5. Health:
+6. Health:
 - `GET http://localhost:3000/healthz`
+
+## Session Store Modes
+
+### `postgres`
+Default runtime posture.
+
+- Stores OAuth sessions and pending OAuth state in Postgres
+- Encrypts access tokens, refresh tokens, and PKCE verifiers before persistence
+- Requires `DATABASE_URL`, `SESSION_STORE_MODE=postgres`, and `SESSION_ENCRYPTION_KEY`
+- Fails closed if the schema is missing
+
+### `in_memory`
+Development-only bridge mode.
+
+- Uses the same encrypted row format in memory
+- Loses sessions on restart
+- Not durable and not production-complete
+- Useful for local testing when Postgres is unavailable
+
+## Session Lifecycle
+
+- `active`: session can be used after scope, expiry, and token verification checks pass
+- `expired`: session exceeded its lifetime and is no longer returned as active
+- `revoked`: session was explicitly invalidated and is never returned as active
+- `invalid`: session failed a refresh or was otherwise marked unusable
+
+Cleanup behavior:
+- Expired and non-active sessions are removed by the cleanup job
+- Pending OAuth state is also cleaned up after expiry
+- Cleanup runs once at startup and then on a periodic loop
+
+Session access rules:
+- Lookup is fail-closed
+- Expired sessions are not returned
+- Revoked sessions are not returned
+- Linked-account hydration persists back to the session store
 
 ## Output Contract Notes
 
@@ -186,6 +243,7 @@ User lookup normalizes into:
 - `meta` with normalized rate-limit + limitation fields
 
 Server does not fabricate unavailable metrics or fields.
+Required string fields are now hard-validated during normalization; if upstream omits a required field, the tool fails with an upstream-data error instead of inventing empty strings.
 
 ## Error and Rate-Limit Behavior
 
@@ -201,12 +259,52 @@ Current tests:
 - `tests/rateLimit.test.ts`
 - `tests/normalize.test.ts`
 - `tests/toolCatalog.test.ts`
+- `tests/authChallenge.test.ts`
+- `tests/homeTimelinePath.test.ts`
+- `tests/normalizeFailure.test.ts`
+- `tests/tokenVerifierMode.test.ts`
+- `tests/sessionStore.test.ts`
 
 Run:
 ```bash
 npm test
 npm run check
 ```
+
+## Live Integration Harness
+
+The repository includes a small opt-in live harness for local operator checks.
+
+What it covers:
+- `GET /healthz`
+- MCP transport reachability and basic `tools/list`
+- Safe public/noauth tool calls when explicitly enabled
+- One intentional auth-required negative check
+- Manual OAuth-assisted verification with a supplied `oauth_session_id`
+
+What it does not cover:
+- Full production readiness
+- Browser automation
+- Continuous monitoring
+- Write-side X actions
+- Load, resilience, or HA validation
+
+Quick run:
+```bash
+LIVE_TEST_BASE_URL=http://localhost:3000 \
+LIVE_TEST_ENABLE_PUBLIC_X=true \
+LIVE_TEST_QUERY=openai \
+npm run live:check
+```
+
+Manual OAuth helper:
+```bash
+LIVE_TEST_BASE_URL=http://localhost:3000 \
+LIVE_TEST_OAUTH_SESSION_ID=<session-id> \
+npm run live:oauth:check
+```
+
+If you need the operator workflow, environment list, and debugging notes, see [docs/live_integration_harness.md](./docs/live_integration_harness.md).
 
 ## File Structure
 
@@ -230,9 +328,8 @@ tsconfig.json
 
 ## Roadmap (Next Steps)
 
-1. Add durable encrypted token/session storage (DB or KMS-backed secret store).
-2. Add OAuth integration tests against a controlled X app environment.
-3. Add request-level auth context bridging from MCP client identity into token resolution.
-4. Add optional cache for safe read endpoints with explicit TTL policy.
-5. Add structured audit sink (request provenance + tool invocation logs).
-6. Add optional widget/UI layer without changing the core tool contracts.
+1. Add OAuth integration tests against a controlled X app environment.
+2. Add request-level auth context bridging from MCP client identity into token resolution.
+3. Add optional cache for safe read endpoints with explicit TTL policy.
+4. Add structured audit sink (request provenance + tool invocation logs).
+5. Add optional widget/UI layer without changing the core tool contracts.

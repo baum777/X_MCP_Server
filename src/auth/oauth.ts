@@ -1,9 +1,9 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Env } from "../config/env.js";
 import { AppError } from "../lib/errors.js";
 import type { Logger } from "../lib/logger.js";
 import { generatePkcePair, randomState } from "./pkce.js";
-import type { InMemoryTokenStore, TokenSession } from "./tokenStore.js";
+import type { OAuthSessionStore, TokenSession } from "./sessionTypes.js";
 
 type OAuthTokenResponse = {
   token_type?: string;
@@ -16,17 +16,20 @@ type OAuthTokenResponse = {
 export class XOAuthService {
   constructor(
     private readonly env: Env,
-    private readonly tokenStore: InMemoryTokenStore,
+    private readonly tokenStore: OAuthSessionStore,
     private readonly logger: Logger
   ) {}
 
-  buildAuthorizeRedirectUrl() {
+  async buildAuthorizeRedirectUrl() {
+    const now = nowUnix();
     const state = randomState();
     const { verifier, challenge } = generatePkcePair();
-    this.tokenStore.putPendingAuth({
+    await this.tokenStore.putPendingAuth({
       state,
       codeVerifier: verifier,
-      createdAtUnix: nowUnix()
+      createdAtUnix: now,
+      expiresAtUnix: now + this.env.oauthPendingAuthTtlSeconds,
+      status: "active"
     });
 
     const url = new URL(this.env.xAuthorizeUrl);
@@ -41,7 +44,7 @@ export class XOAuthService {
   }
 
   async exchangeCodeForSession(params: { code: string; state: string }): Promise<TokenSession> {
-    const pending = this.tokenStore.consumePendingAuth(params.state);
+    const pending = await this.tokenStore.consumePendingAuth(params.state);
     if (!pending) {
       throw new AppError("AUTH_REQUIRED", "OAuth state is missing or has already been consumed.", 401, false);
     }
@@ -58,7 +61,8 @@ export class XOAuthService {
         ? nowUnix() + tokenPayload.expires_in
         : null;
 
-    const session = this.tokenStore.createOrUpdateSession({
+    const session = await this.tokenStore.createSession({
+      sessionId: randomSessionId(),
       accessToken,
       refreshToken: tokenPayload.refresh_token ?? null,
       scope: scopes,
@@ -66,7 +70,11 @@ export class XOAuthService {
       linkedAccount: {
         id: null,
         username: null
-      }
+      },
+      createdAtUnix: nowUnix(),
+      updatedAtUnix: nowUnix(),
+      lastUsedAtUnix: nowUnix(),
+      status: "active"
     });
 
     this.logger.info(
@@ -115,6 +123,7 @@ export class XOAuthService {
 
     if (!response.ok) {
       const payload = await safeJson(response);
+      await this.tokenStore.updateSession(session.sessionId, { status: "invalid" });
       throw new AppError("UPSTREAM_AUTH_ERROR", "Token refresh was rejected by X OAuth.", response.status, false, {
         payload
       });
@@ -122,11 +131,11 @@ export class XOAuthService {
 
     const tokenPayload = (await response.json()) as OAuthTokenResponse;
     if (!tokenPayload.access_token) {
+      await this.tokenStore.updateSession(session.sessionId, { status: "invalid" });
       throw new AppError("AUTH_TOKEN_INVALID", "Token refresh did not return an access token.", 401, false);
     }
 
-    const refreshed = this.tokenStore.createOrUpdateSession({
-      sessionId: session.sessionId,
+    const refreshed = await this.tokenStore.updateSession(session.sessionId, {
       accessToken: tokenPayload.access_token,
       refreshToken: tokenPayload.refresh_token ?? session.refreshToken,
       scope: tokenPayload.scope?.split(" ").filter(Boolean) ?? session.scope,
@@ -136,6 +145,9 @@ export class XOAuthService {
           : session.expiresAtUnix,
       linkedAccount: session.linkedAccount
     });
+    if (!refreshed) {
+      throw new AppError("STORAGE_ERROR", "Session refresh could not be persisted.", 500, false);
+    }
     return refreshed;
   }
 
@@ -177,6 +189,10 @@ export class XOAuthService {
 
 function nowUnix(): number {
   return Math.floor(Date.now() / 1000);
+}
+
+function randomSessionId(): string {
+  return randomUUID();
 }
 
 function hashValue(value: string): string {

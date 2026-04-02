@@ -1,19 +1,32 @@
 import type { Express } from "express";
+import type { OAuthSessionStore } from "../auth/sessionTypes.js";
 import type { XOAuthService } from "../auth/oauth.js";
-import type { InMemoryTokenStore } from "../auth/tokenStore.js";
 import type { XApiClient } from "../clients/xApiClient.js";
-import { asAppError } from "../lib/errors.js";
+import { AppError, asAppError } from "../lib/errors.js";
 import type { Logger } from "../lib/logger.js";
 
-export function registerOAuthRoutes(app: Express, services: {
-  oauthService: XOAuthService;
-  xClient: XApiClient;
-  tokenStore: InMemoryTokenStore;
-  logger: Logger;
-}) {
-  app.get("/oauth/x/start", (_req, res) => {
-    const flow = services.oauthService.buildAuthorizeRedirectUrl();
-    res.redirect(flow.url);
+export function registerOAuthRoutes(
+  app: Express,
+  services: {
+    oauthService: XOAuthService;
+    xClient: XApiClient;
+    tokenStore: OAuthSessionStore;
+    logger: Logger;
+  }
+) {
+  app.get("/oauth/x/start", async (_req, res) => {
+    try {
+      const flow = await services.oauthService.buildAuthorizeRedirectUrl();
+      res.redirect(flow.url);
+    } catch (error) {
+      const appError = asAppError(error);
+      res.status(appError.status).json({
+        ok: false,
+        code: appError.code,
+        message: appError.message,
+        details: appError.details ?? null
+      });
+    }
   });
 
   app.get("/oauth/x/callback", async (req, res) => {
@@ -36,19 +49,18 @@ export function registerOAuthRoutes(app: Express, services: {
         const user = typeof me.data.data === "object" && me.data.data ? (me.data.data as Record<string, unknown>) : null;
         accountId = typeof user?.id === "string" ? user.id : null;
         accountUsername = typeof user?.username === "string" ? user.username : null;
-        services.tokenStore.createOrUpdateSession({
-          sessionId: session.sessionId,
-          accessToken: session.accessToken,
-          refreshToken: session.refreshToken,
-          scope: session.scope,
-          expiresAtUnix: session.expiresAtUnix,
-          linkedAccount: {
-            id: accountId,
-            username: accountUsername
-          }
-        });
       } catch (error) {
         services.logger.warn({ error }, "OAuth callback completed but users/me fetch failed.");
+      }
+
+      const linkedSession = await services.tokenStore.updateSession(session.sessionId, {
+        linkedAccount: {
+          id: accountId,
+          username: accountUsername
+        }
+      });
+      if (!linkedSession) {
+        throw new AppError("STORAGE_ERROR", "OAuth session could not be updated after users/me hydration.", 500, false);
       }
 
       res.status(200).json({

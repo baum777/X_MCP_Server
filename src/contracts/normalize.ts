@@ -1,4 +1,5 @@
 import type { RateLimitInfo } from "../lib/rateLimit.js";
+import { AppError } from "../lib/errors.js";
 import type { NormalizedTimelineBundle, NormalizedUserLookupResult } from "./xSchemas.js";
 import { normalizedTimelineBundleSchema, normalizedUserLookupResultSchema, xUserSchema } from "./xSchemas.js";
 
@@ -119,8 +120,8 @@ function normalizePost(raw: RawPost) {
   const publicMetrics = (raw.public_metrics as Record<string, unknown> | undefined) ?? {};
   const referenced = Array.isArray(raw.referenced_tweets) ? raw.referenced_tweets : [];
   return {
-    id: asString(raw.id),
-    text: asString(raw.text),
+    id: requireString(raw.id, "id"),
+    text: requireString(raw.text, "text"),
     author_id: asNullableString(raw.author_id),
     created_at: asNullableString(raw.created_at),
     language: asNullableString(raw.lang),
@@ -129,8 +130,8 @@ function normalizePost(raw: RawPost) {
     referenced: referenced
       .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
       .map((item) => ({
-        id: asString(item.id),
-        type: asString(item.type)
+        id: requireString(item.id, "referenced_tweets.id"),
+        type: requireString(item.type, "referenced_tweets.type")
       })),
     metrics: {
       retweet_count: asNullableNumber(publicMetrics.retweet_count),
@@ -151,8 +152,8 @@ function normalizePost(raw: RawPost) {
 
 function normalizeMedia(raw: Record<string, unknown>) {
   return {
-    media_key: asString(raw.media_key),
-    type: asString(raw.type),
+    media_key: requireString(raw.media_key, "media_key"),
+    type: requireString(raw.type, "type"),
     url: asNullableString(raw.url),
     preview_image_url: asNullableString(raw.preview_image_url),
     duration_ms: asNullableNumber(raw.duration_ms),
@@ -181,8 +182,13 @@ function extractUrlArray(value: unknown): string[] {
     .filter((item): item is string => typeof item === "string");
 }
 
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
+function requireString(value: unknown, fieldName: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new AppError("UPSTREAM_ERROR", `Upstream payload missing required string field: ${fieldName}.`, 502, false, {
+      field: fieldName
+    });
+  }
+  return value;
 }
 
 function asNullableString(value: unknown): string | null {

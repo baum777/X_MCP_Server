@@ -26,7 +26,7 @@ export function registerSearchRecentPostsTool(server: any, ctx: ToolContext) {
         const input = searchRecentPostsInputSchema.parse(rawInput);
         ensureRecentWindow(input.start_time, input.end_time);
 
-        const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id);
+        const oauthSession = await resolveOptionalAuthSession(ctx, input.oauth_session_id, ["tweet.read"]);
         const authMode = oauthSession ? "oauth2" : "noauth";
         const token = oauthSession?.accessToken ?? requirePublicToken(ctx.env);
 
@@ -73,7 +73,7 @@ export function registerSearchRecentPostsTool(server: any, ctx: ToolContext) {
         };
       } catch (error) {
         ctx.logger.error({ requestId, tool: "x.search_recent_posts", error }, "Tool failed");
-        return toolErrorResult(requestId, error);
+        return toolErrorResult(ctx, requestId, error);
       }
     }
   );
