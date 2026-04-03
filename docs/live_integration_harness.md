@@ -19,7 +19,7 @@ It is not meant for:
 Run:
 
 ```bash
-LIVE_TEST_BASE_URL=http://localhost:3000 npm run live:check
+LIVE_TEST_BASE_URL=http://127.0.0.1:3000 npm run live:check
 ```
 
 Optional environment variables:
@@ -59,7 +59,7 @@ If a public tool fails with `AUTH_REQUIRED`, `AUTH_TOKEN_INVALID`, or `UPSTREAM_
 Run:
 
 ```bash
-LIVE_TEST_BASE_URL=http://localhost:3000 \
+LIVE_TEST_BASE_URL=http://127.0.0.1:3000 \
 LIVE_TEST_OAUTH_SESSION_ID=<session-id> \
 npm run live:oauth:check
 ```
@@ -72,7 +72,7 @@ npm run live:oauth:help
 
 Manual flow:
 1. Start the server normally.
-2. Open `http://localhost:3000/oauth/x/start`.
+2. Open `http://127.0.0.1:3000/oauth/x/start`.
 3. Complete X login in the browser.
 4. Copy `oauth_session_id` from the callback JSON response.
 5. Run the helper with that session id.

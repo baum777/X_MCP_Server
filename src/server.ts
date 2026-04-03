@@ -21,17 +21,9 @@ async function main() {
   const tokenVerifier = new OAuthTokenVerifier(env);
   const xClient = new XApiClient();
   const oauthService = new XOAuthService(env, tokenStore, logger);
-  const mcpServer = buildMcpServer({
-    env,
-    logger,
-    xClient,
-    tokenStore,
-    tokenVerifier,
-    oauthService
-  });
-
   const app = express();
   app.use(express.json({ limit: "1mb" }));
+  const mcpTransports = new Map<string, StreamableHTTPServerTransport>();
 
   registerHealthRoutes(app, env);
   registerOAuthRoutes(app, {
@@ -43,17 +35,63 @@ async function main() {
 
   app.post(env.mcpBasePath, async (req, res) => {
     const requestId = randomUUID();
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID()
-    });
+    const sessionId = getHeaderValue(req.headers["mcp-session-id"]);
+    const isInitializeRequest = isInitializeJsonRpcRequest(req.body);
+    const transport = sessionId ? mcpTransports.get(sessionId) : null;
 
     res.setHeader("x-request-id", requestId);
-    transport.onerror = (error) => {
-      logger.error({ requestId, error }, "MCP transport error");
-    };
+
+    if (!transport) {
+      if (!isInitializeRequest) {
+        res.status(400).json({
+          ok: false,
+          code: "BAD_REQUEST",
+          message: sessionId ? "Unknown MCP session." : "MCP session is required.",
+          details: null
+        });
+        return;
+      }
+
+      const nextTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (newSessionId) => {
+          mcpTransports.set(newSessionId, nextTransport);
+        },
+        onsessionclosed: (closedSessionId) => {
+          mcpTransports.delete(closedSessionId);
+        }
+      });
+      const mcpServer = buildMcpServer({
+        env,
+        logger,
+        xClient,
+        tokenStore,
+        tokenVerifier,
+        oauthService
+      });
+      nextTransport.onerror = (error) => {
+        logger.error({ requestId, error }, "MCP transport error");
+      };
+
+      try {
+        await mcpServer.connect(nextTransport as any);
+        await nextTransport.handleRequest(req, res, req.body);
+      } catch (error) {
+        const appError = asAppError(error);
+        logger.error({ requestId, error }, "MCP request failed");
+        if (!res.headersSent) {
+          res.status(appError.status).json({
+            ok: false,
+            code: appError.code,
+            message: appError.message,
+            details: appError.details ?? null
+          });
+        }
+      }
+      return;
+    }
 
     try {
-      await mcpServer.connect(transport as any);
       await transport.handleRequest(req, res, req.body);
     } catch (error) {
       const appError = asAppError(error);
@@ -90,6 +128,24 @@ async function main() {
   void tokenStore.deleteExpiredSessions().catch((error) => {
     logger.warn({ error }, "Initial session cleanup failed");
   });
+}
+
+function getHeaderValue(value: string | string[] | undefined): string | null {
+  if (typeof value === "string" && value.length > 0) {
+    return value;
+  }
+  if (Array.isArray(value) && value.length > 0 && typeof value[0] === "string" && value[0].length > 0) {
+    return value[0];
+  }
+  return null;
+}
+
+function isInitializeJsonRpcRequest(body: unknown): boolean {
+  if (typeof body !== "object" || !body || Array.isArray(body)) {
+    return false;
+  }
+  const request = body as Record<string, unknown>;
+  return request.jsonrpc === "2.0" && request.method === "initialize";
 }
 
 void main().catch((error) => {

@@ -13,6 +13,8 @@ type OAuthTokenResponse = {
   scope?: string;
 };
 
+type TokenRequestKind = "authorization_code" | "refresh_token";
+
 export class XOAuthService {
   constructor(
     private readonly env: Env,
@@ -98,38 +100,10 @@ export class XOAuthService {
       return session;
     }
 
-    const body = new URLSearchParams();
-    body.set("grant_type", "refresh_token");
-    body.set("refresh_token", session.refreshToken);
-    body.set("client_id", this.env.xClientId);
-    if (this.env.xClientSecret) {
-      body.set("client_secret", this.env.xClientSecret);
-    }
-
-    let response: Response;
-    try {
-      response = await fetch(this.env.xTokenUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/x-www-form-urlencoded"
-        },
-        body
-      });
-    } catch (error) {
-      throw new AppError("NETWORK_ERROR", "Token refresh failed due to a network error.", 502, true, {
-        reason: error instanceof Error ? error.message : "unknown"
-      });
-    }
-
-    if (!response.ok) {
-      const payload = await safeJson(response);
-      await this.tokenStore.updateSession(session.sessionId, { status: "invalid" });
-      throw new AppError("UPSTREAM_AUTH_ERROR", "Token refresh was rejected by X OAuth.", response.status, false, {
-        payload
-      });
-    }
-
-    const tokenPayload = (await response.json()) as OAuthTokenResponse;
+    const tokenPayload = await this.requestToken({
+      grantType: "refresh_token",
+      refreshToken: session.refreshToken
+    });
     if (!tokenPayload.access_token) {
       await this.tokenStore.updateSession(session.sessionId, { status: "invalid" });
       throw new AppError("AUTH_TOKEN_INVALID", "Token refresh did not return an access token.", 401, false);
@@ -152,38 +126,85 @@ export class XOAuthService {
   }
 
   private async exchangeAuthorizationCode(code: string, codeVerifier: string): Promise<OAuthTokenResponse> {
-    const body = new URLSearchParams();
-    body.set("grant_type", "authorization_code");
-    body.set("code", code);
-    body.set("redirect_uri", this.env.xRedirectUri);
-    body.set("code_verifier", codeVerifier);
-    body.set("client_id", this.env.xClientId);
-    if (this.env.xClientSecret) {
-      body.set("client_secret", this.env.xClientSecret);
-    }
+    return this.requestToken({
+      grantType: "authorization_code",
+      code,
+      codeVerifier
+    });
+  }
+
+  private async requestToken(request: {
+    grantType: TokenRequestKind;
+    code?: string;
+    codeVerifier?: string;
+    refreshToken?: string;
+  }): Promise<OAuthTokenResponse> {
+    const { headers, body } = this.buildTokenRequest(request);
 
     let response: Response;
     try {
       response = await fetch(this.env.xTokenUrl, {
         method: "POST",
-        headers: {
-          "content-type": "application/x-www-form-urlencoded"
-        },
+        headers,
         body
       });
     } catch (error) {
-      throw new AppError("NETWORK_ERROR", "OAuth token exchange failed due to a network error.", 502, true, {
+      const failure =
+        request.grantType === "refresh_token"
+          ? "Token refresh failed due to a network error."
+          : "OAuth token exchange failed due to a network error.";
+      throw new AppError("NETWORK_ERROR", failure, 502, true, {
         reason: error instanceof Error ? error.message : "unknown"
       });
     }
 
     if (!response.ok) {
       const payload = await safeJson(response);
-      throw new AppError("UPSTREAM_AUTH_ERROR", "OAuth token exchange was rejected by X.", response.status, false, {
+      const failure =
+        request.grantType === "refresh_token"
+          ? "Token refresh was rejected by X OAuth."
+          : "OAuth token exchange was rejected by X.";
+      throw new AppError("UPSTREAM_AUTH_ERROR", failure, response.status, false, {
         payload
       });
     }
     return (await response.json()) as OAuthTokenResponse;
+  }
+
+  private buildTokenRequest(request: {
+    grantType: TokenRequestKind;
+    code?: string;
+    codeVerifier?: string;
+    refreshToken?: string;
+  }): { headers: Record<string, string>; body: URLSearchParams } {
+    const body = new URLSearchParams();
+    body.set("grant_type", request.grantType);
+
+    if (request.grantType === "authorization_code") {
+      if (!request.code || !request.codeVerifier) {
+        throw new AppError("CONFIG_ERROR", "Authorization code exchange requires code and codeVerifier.", 500, false);
+      }
+      body.set("code", request.code);
+      body.set("redirect_uri", this.env.xRedirectUri);
+      body.set("code_verifier", request.codeVerifier);
+    } else {
+      if (!request.refreshToken) {
+        throw new AppError("CONFIG_ERROR", "Refresh token exchange requires refreshToken.", 500, false);
+      }
+      body.set("refresh_token", request.refreshToken);
+    }
+
+    const headers: Record<string, string> = {
+      "content-type": "application/x-www-form-urlencoded"
+    };
+
+    if (this.env.xClientSecret) {
+      headers.authorization = buildBasicAuthHeader(this.env.xClientId, this.env.xClientSecret);
+    } else {
+      body.set("client_id", this.env.xClientId);
+    }
+
+    return { headers, body };
   }
 }
 
@@ -205,4 +226,9 @@ async function safeJson(response: Response): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+function buildBasicAuthHeader(clientId: string, clientSecret: string): string {
+  const token = Buffer.from(`${clientId}:${clientSecret}`, "utf8").toString("base64");
+  return `Basic ${token}`;
 }

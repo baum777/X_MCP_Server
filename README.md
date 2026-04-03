@@ -186,10 +186,10 @@ npm run dev
 ```
 
 5. MCP endpoint:
-- `POST {PUBLIC_BASE_URL}{MCP_BASE_PATH}` (default `POST http://localhost:3000/mcp`)
+- `POST {PUBLIC_BASE_URL}{MCP_BASE_PATH}` (default `POST http://127.0.0.1:3000/mcp`)
 
 6. Health:
-- `GET http://localhost:3000/healthz`
+- `GET http://127.0.0.1:3000/healthz`
 
 ## Session Store Modes
 
@@ -291,7 +291,7 @@ What it does not cover:
 
 Quick run:
 ```bash
-LIVE_TEST_BASE_URL=http://localhost:3000 \
+LIVE_TEST_BASE_URL=http://127.0.0.1:3000 \
 LIVE_TEST_ENABLE_PUBLIC_X=true \
 LIVE_TEST_QUERY=openai \
 npm run live:check
@@ -299,7 +299,7 @@ npm run live:check
 
 Manual OAuth helper:
 ```bash
-LIVE_TEST_BASE_URL=http://localhost:3000 \
+LIVE_TEST_BASE_URL=http://127.0.0.1:3000 \
 LIVE_TEST_OAUTH_SESSION_ID=<session-id> \
 npm run live:oauth:check
 ```

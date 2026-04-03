@@ -3,7 +3,7 @@ import { loadLiveHarnessConfig, LiveMcpClient, printStep, redactSessionId, summa
 async function main() {
   const helpRequested = process.argv.includes("--help");
   if (helpRequested) {
-    const baseUrl = process.env.LIVE_TEST_BASE_URL ?? "http://localhost:3000";
+    const baseUrl = process.env.LIVE_TEST_BASE_URL ?? "http://127.0.0.1:3000";
     printHelp(baseUrl);
     process.exit(0);
     return;
